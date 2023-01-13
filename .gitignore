@@ -5,5 +5,6 @@ catboost_info/
 models/
 models_test/
 backup/
+__pycache__
 data/train_df_shuffled_expanded.csv
 data/train_df_shuffled_expanded2.csv
