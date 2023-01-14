@@ -50,129 +50,11 @@ MODEL_PATH_TEST = 'models_test/'
 HISTORY_PATH = 'model_data/model_history.csv'
 HISTORY_PATH_TEST = 'model_data/model_history_test.csv'
 SEED = 89 # this must remain the same for dataset generation consistency, as pandas uses the numpy seed to dictate its own randomness
-VOCAB = 10000
+VOCAB_SIZE = 10000
 
 # initialize a global store for model histories, and re-fetch its contents whenever required 
 def model_history(path=HISTORY_PATH):
     return pd.read_csv(path)
-
-with open('data/train.json','r') as f: train = json.load(f)
-with open('data/test.json','r') as f: test = json.load(f)
-
-np.random.seed(SEED)
-train_df = pd.DataFrame.from_dict(train).sample(frac=1).reset_index(drop=True)
-test_df = pd.DataFrame.from_dict(test)
-
-train_df.head()
-
-groups_df = pd.DataFrame.from_dict([Counter(train_df['cuisine'])]).transpose().reset_index().sort_values(by='index').reset_index(drop=True)
-groups_df['share'] = groups_df[0]/sum(groups_df[0])
-groups_df
-
-foods = []
-for i in train:
-    foods = foods+i['ingredients']
-
-food_counts = Counter(foods)
-
-food_counts = pd.DataFrame.from_dict([food_counts]).transpose().reset_index()
-food_counts.columns = ['food','freq']
-food_counts = food_counts.sort_values(by='freq',ascending=False).reset_index(drop=True)
-food_counts['cum_sum'] = np.cumsum(food_counts['freq'])/sum(food_counts['freq'])
-food_counts
-
-for i,j in enumerate(food_counts['food'][:len(food_counts)//4]):
-    if i%200 == 0: print(i)
-    train_df[j] = train_df['ingredients'].apply(lambda x: 1 if j in x else 0)
-    test_df[j] = test_df['ingredients'].apply(lambda x: 1 if j in x else 0)
-
-train_df.head()
-
-pca = PCA(n_components=2)
-
-pca = PCA().fit(train_df.iloc[:,3:])
-
-plt.plot(np.cumsum(pca.explained_variance_ratio_))
-plt.xlabel('number of components')
-plt.ylabel('cumulative explained variance')
-
-pca = PCA(n_components=1000).fit(train_df.iloc[:,3:])
-
-x_train = pca.transform(train_df.iloc[:,3:])
-
-y_train = LabelEncoder().fit(train_df['cuisine']).transform(train_df['cuisine'])
-
-x_train.shape
-
-type(y_train)
-
-list(np.quantile(food_counts['cum_sum'],[(c+1)/20 for c in range(20)]))
-
-y_train = y_train.transform(train_df['cuisine'])
-
-data = pd.concat([pd.DataFrame(x_train),pd.DataFrame(y_train)],axis=1)
-
-data.columns = list(data.columns)[:-1]+['y']
-data.head()
-
-def cbc_wrapper(data, target='y', test_frac=0.1, loss_function='MultiClass', verbose=True, eval_metric='MultiClass', rounds=1, epochs=200, depth=5, learning_rate=0.01):
-    data_source = 'kaggle_mercedez_benz_regression'
-
-    types_df = pd.DataFrame(data.dtypes).reset_index().reset_index()
-    types_char = types_df[types_df[0]=='object']
-    types_float = types_df[types_df[0]=='float64']
-    types_int = types_df[types_df[0]=='int64']
-    ordcols = list(types_char['index'])+list(types_float['index'])+list(types_int['index'])
-    ordindices = list(types_char['level_0'])
-    data = data[ordcols]
-    data[list(types_char['index'])] = data[list(types_char['index'])].astype(str)
-
-    my_features = data.filter(regex='^(?!'+target+')')
-    feature_names = list(my_features.columns.values)
-
-    models, model_paths = [], []
-    for i in range(rounds):
-        data_shuffled = data.loc[:,:].copy().sample(frac=1)
-        x_val = data_shuffled.iloc[:int(len(data_shuffled)*test_frac),:]
-        y_val = x_val.pop(target)
-        x_train = data_shuffled.iloc[int(len(data_shuffled)*test_frac):,:]
-        y_train = x_train.pop(target)
-
-        models.append(cbc(loss_function=loss_function,verbose=verbose,eval_metric=eval_metric,metric_period=1,
-                          iterations=epochs,depth=depth,learning_rate=learning_rate,od_wait=20))
-        models[-1].fit(x_train,y_train,eval_set=(x_val,y_val),cat_features=list(range(0,len(ordindices)-0)),metric_period=1)
-        y_pred = models[-1].predict(x_val,verbose=True)
-    return models,y_val,y_pred
-
-model = cbc_wrapper(data)
-
-model[0][-1].save_model('model_data/catboost_1.json',format='json')
-
-preds = pd.concat([pd.DataFrame(model[1]).reset_index(drop=True),pd.DataFrame(model[2])],axis=1)
-
-model[2]
-
-preds['match'] = preds.apply(lambda r: 1 if r['y']==r[0] else 0,axis=1)
-
-## Try Clustering methods just ot see how good or bad they are (to do)
-
-sum(preds['match'])/len(preds)
-
-
-
-
-
-
-
-for i in train:
-    for j in i['ingredients']:
-        i[j] = 1
-        
-train
-
-pd.DataFrame.from_dict(train)
-
-
 
 # self-ingestion to get out our python code when regular export fails
 def get_raw_python_from_notebook(notebook,python=None):
@@ -430,6 +312,66 @@ def plot_history(hist, filters=None, group='name', metrics=['accuracy','loss'], 
                 if val=='overlap': s = sns.lineplot(ax=axes[j[1]], x = data['epoch'], y = data['val_'+metrics[idx]])
                 if show_lr is True and l==0: s = sns.lineplot(ax=axes[j[1]].twinx(), x = data['epoch'], y = data['lr'], color='#CCE', linestyle='--')
 
+# model wrapper for catboost classification and regression
+def cbc_wrapper(data, target='y', test_frac=0.1, loss_function='MultiClass', verbose=1, eval_metric='Accuracy',
+                rounds=1, epochs=200, depth=5, learning_rate=0.01, use_best_model=True):
+
+    types_df = pd.DataFrame(data.dtypes).reset_index().reset_index()
+    types_char = types_df[types_df[0]=='object']
+    types_float = types_df[types_df[0]=='float64']
+    types_int = types_df[types_df[0]=='int64']
+    ordcols = list(types_char['index'])+list(types_float['index'])+list(types_int['index'])
+    ordindices = list(types_char['level_0'])
+    data = data[ordcols]
+    data[list(types_char['index'])] = data[list(types_char['index'])].astype(str)
+
+    my_features = data.filter(regex='^(?!'+target+')')
+    feature_names = list(my_features.columns.values)
+
+    models, model_paths = [], []
+    for i in range(rounds):
+        data_shuffled = data.loc[:,:].copy().sample(frac=1)
+        x_val = data_shuffled.iloc[:int(len(data_shuffled)*test_frac),:]
+        y_val = x_val.pop(target)
+        x_train = data_shuffled.iloc[int(len(data_shuffled)*test_frac):,:]
+        y_train = x_train.pop(target)
+        cat_features=list(range(0,len(ordindices)-0))
+
+        model = cbc(loss_function=loss_function,verbose=verbose,eval_metric=eval_metric,metric_period=1,
+                          iterations=epochs,depth=depth,learning_rate=learning_rate,od_wait=20)
+        model.fit(x_train,y_train,eval_set=(x_val,y_val),cat_features=cat_features,metric_period=1)
+        y_pred = model.predict(x_val,verbose=verbose)
+        
+        res = model.evals_result_
+        for m,k in enumerate(res.keys()):
+            for j,l in enumerate(res[k].keys()):
+                if m==0 and j==0:
+                    history = pd.DataFrame(res[k][l],columns=[(k+'_'+l).lower()]).reset_index()
+                else:
+                    history = pd.concat([history,pd.DataFrame(res[k][l],columns=[(k+'_'+l).lower()]).reset_index(drop=True)],axis=1)
+        history.columns = ['epoch']+list(history.columns)[1:]
+        history['depth'] = depth
+        history['learning_rate'] = learning_rate
+        history['max_epochs'] = epochs
+        history['rounds'] = rounds
+        history['round'] = i+1
+        if type == 'regressor':
+            r2 = r2_score(np.array(y_val),y_pred)
+            history['r2'] = np.round(r2,6)
+        history_all = history if i==0 else history_all.append(history) 
+
+        models.append(model)
+    
+    if rounds==1: models = models[-1]
+    params = {'x_train': x_train,
+              'y_train': y_train,
+              'x_val': x_val,
+              'y_val': y_val,
+              'cat_features': cat_features,
+              'y_pred': y_pred}
+        
+    return models,history_all,params
+
 # model wrapper for fully connected model architectures 
 
 def embedding_model(data,loss = 'sparse_categorical_crossentropy',optimizer = 'adam', rnn_depth = 64,
@@ -478,7 +420,6 @@ def lstm_model(data, loss = 'binary_crossentropy', optimizer = 'adam', rnn_depth
     model.compile(loss=loss,
                   optimizer=optimizer,
                   metrics=metrics)
-    #print(model.summary())
     return model
 
 # stateful version of LSTM model wrapper - work in progress - bidirectional stateful to fix
@@ -762,6 +703,89 @@ def process_model(data, model, label = 'y', model_name = 'mymodel', model_select
                 break
         r += 1
 
+with open('data/train.json','r') as f: train = json.load(f)
+with open('data/test.json','r') as f: test = json.load(f)
+
+np.random.seed(SEED)
+train_df = pd.DataFrame.from_dict(train).sample(frac=1).reset_index(drop=True)
+test_df = pd.DataFrame.from_dict(test)
+
+train_df.head()
+
+groups_df = pd.DataFrame.from_dict([Counter(train_df['cuisine'])]).transpose().reset_index().sort_values(by='index').reset_index(drop=True)
+groups_df['share'] = (groups_df[0]/sum(groups_df[0])).apply(lambda x: '{0:.2%}'.format(x))
+groups_df
+
+foods = [] # get an exhaustive list of foods contained in recipes
+for i in train:
+    foods = foods+i['ingredients']
+
+food_counts = Counter(foods) # get the frequencies of each food to aid prioritization
+
+food_counts = pd.DataFrame.from_dict([food_counts]).transpose().reset_index()
+food_counts.columns = ['food','freq']
+food_counts = food_counts.sort_values(by='freq',ascending=False).reset_index(drop=True)
+food_counts['cum_sum'] = np.cumsum(food_counts['freq'])/sum(food_counts['freq'])
+print('Total number of foods:',len(food_counts),'\n')
+food_counts.head()
+
+for i,j in enumerate(food_counts['food'][:len(food_counts)]):
+    if i%200 == 0: print(i)
+    train_df[j] = train_df['ingredients'].apply(lambda x: 1 if j in x else 0)
+    test_df[j] = test_df['ingredients'].apply(lambda x: 1 if j in x else 0)
+
+train_df.head()
+
+pca = PCA().fit(train_df.iloc[:,3:])
+
+plt.figure(figsize=(10,6))
+plt.plot(np.cumsum(pca.explained_variance_ratio_))
+plt.xlabel('number of components')
+plt.ylabel('cumulative explained variance');
+
+pca = PCA(n_components=250).fit(train_df.iloc[:,3:])
+
+x_train = pca.transform(train_df.iloc[:,3:])
+y_train_ordinal = LabelEncoder().fit(train_df['cuisine']).transform(train_df['cuisine'])
+y_train_one_hot = OneHotEncoder().fit(np.array(train_df['cuisine']).reshape(-1, 1)).transform(np.array(train_df['cuisine']).reshape(-1, 1)).toarray()
+
+data_ordinal = pd.concat([pd.DataFrame(x_train),pd.DataFrame(y_train_ordinal)],axis=1)
+
+data_ordinal.columns = list(data_ordinal.columns)[:-1]+['y']
+data_ordinal.head()
+
+model1,model_history1,model_data1 = cbc_wrapper(data_ordinal,epochs=20000,verbose=1000,eval_metric='Accuracy')
+model1.save_model('models/catboost_1.json',format='json')
+model_history1.to_csv('models/catboost_history_1.csv',index=False)
+
+model2,model_history2,model_data2 = cbc_wrapper(data_ordinal,epochs=20000,verbose=1000,eval_metric='MultiClass')
+model2.save_model('models/catboost_1.json',format='json')
+model_history2.to_csv('models/catboost_history_2.csv',index=False)
+
+model_history = pd.concat([model_history2.iloc[:,:3],model_history1[['learn_accuracy','validation_accuracy']]],axis=1).iloc[:,1:]
+model_history.columns = ['train_loss','validation_loss','train_accuracy','validation_accuracy']
+
+preds1 = pd.concat([pd.DataFrame(model_data1['y_pred']).reset_index(drop=True),pd.DataFrame(model_data1['y_val']).reset_index(drop=True)],axis=1)
+preds2 = pd.concat([pd.DataFrame(model_data2['y_pred']).reset_index(drop=True),pd.DataFrame(model_data2['y_val']).reset_index(drop=True)],axis=1)
+
+preds1['match'] = preds1.apply(lambda r: 1 if r['y']==r[0] else 0,axis=1)
+preds2['match'] = preds2.apply(lambda r: 1 if r['y']==r[0] else 0,axis=1)
+
+print('Accuracy after',len(model_history1),'epochs is:',sum(preds1['match'])/len(preds1))
+print('Accuracy after',len(model_history2),'epochs is:',sum(preds2['match'])/len(preds2))
+
+plot_history(model_history(),'.*',metrics=['accuracy','loss'],val='overlap',show_lr=True)
+
+metrics=['accuracy','loss'], width=2, height=1, tight=False, size=(20,6), val=None,
+
+plt.figure(figsize=(10,6))
+plt.plot(model_history['learn_multiclass'])
+plt.plot(model_history['validation_multiclass'])
+
+
+
+
+
 # write a shuffled version to file - we can then reuse without shuffling again, to ensure a constistent validation set
 
 train_df['recipe_concat'] = train_df['ingredients'].apply(lambda x: ' '.join(x))
@@ -777,7 +801,7 @@ model_data_onehot_legacy = text_prepare_legacy(train_df[['recipe_clean','cuisine
 model_data = text_prepare(train_df[['recipe_clean','cuisine']], num_words = 10000, max_len = 30, encode = 'ordinal')
 model_data_onehot = text_prepare(train_df[['recipe_clean','cuisine']], num_words = 10000, max_len = 30, encode = 'onehot', batch_size = 64)
 
-model_lstm_1 = lstm_model(model_data, loss = 'sparse_categorical_crossentropy', optimizer = 'adam', rnn_depth = 128, embedding_dim = 64,
+model_lstm_1 = lstm_model(model_data, loss='sparse_categorical_crossentropy', optimizer = 'adam', rnn_depth = 128, embedding_dim = 64,
                            layer_norm = True, categories = 20, activation = 'softmax', metrics=['accuracy'])
 
 process_model(model_data, model_lstm_1, label = 'cuisine', model_name = 'model_lstm', lr = (1e-3, 1e-3), epochs = 20, batch_size = 512, epoch_subset = 1)
@@ -943,7 +967,7 @@ onehot_pred_expanded = np.asarray([np.argmax(preds_onehot_expanded_df.iloc[i,:])
 onehot_real_expanded = np.argmax(model_data_onehot_expanded['val_labels'],axis=1)[np.newaxis]
 onehot_pred_real_expanded = pd.DataFrame(np.concatenate([onehot_pred_expanded,onehot_real_expanded],axis=0).T,columns=['pred','real'])
 onehot_pred_real_expanded['accuracy'] = np.where(onehot_pred_real_expanded['pred']-onehot_pred_real_expanded['real']==0,1,0)
-print('Accuracy is:',sum(onehot_pred_real_expanded['accuracy'])/len(onehot_pred_real_expanded))
+print('Accuracy is:',sum(onehot_pred_real_expanded['accuracy'])/len(onehot_pred_real_expanded),'\n')
 
 filters = 'model_lstm_onehot.*expanded'
 plot_history(model_history(), filters, metrics=['auc','accuracy','loss'], width=3, height=2, tight=False, size=(30,12), val='separate')

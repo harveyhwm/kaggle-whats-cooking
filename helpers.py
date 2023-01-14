@@ -168,7 +168,7 @@ def pretty_pandas(df, fill_palette=None, text_palette=None, rows=None, columns=N
 
     sdf.apply(apply_colors, default_fill_color=default_fill_color, default_text_color=default_text_color,
               default_fill_text_colors=default_fill_text_colors, thresholds=thresholds, default_border=default_border,
-              fill_palette=fill_palette, text_palette=text_palette, rows=row_indices, columns=columns, mymin=mymin, mymax=mymax, axis=0)
+              fill_palette=fill_palette, text_palette=text_palette, rows=rows, columns=columns, mymin=mymin, mymax=mymax, axis=0)
 
     return sdf.format('{:.3f}').set_table_styles([{'selector':'tr','props':[('background-color',bg+' !important')]}])
 
