@@ -44,13 +44,15 @@ from helpers import *
 sns.set_theme()
 
 VAL_FRAC = 0.1
-if 'my_auc' not in globals(): my_auc = AUC() # store the AUC method, being sure to only do so once
+if 'my_auc' not in globals():
+    my_auc = AUC()  # store the AUC method, being sure to only do so once
 MODEL_PATH = 'models/'
 MODEL_PATH_TEST = 'models_test/'
 HISTORY_PATH = 'model_data/model_history.csv'
 HISTORY_PATH_TEST = 'model_data/model_history_test.csv'
-SEED = 89 # this must remain the same for dataset generation consistency, as pandas uses the numpy seed to dictate its own randomness
+SEED = 89  # this must remain the same for dataset generation consistency, as pandas uses the numpy seed to dictate its own randomness
 VOCAB_SIZE = 10000
+
 
 # initialize a global store for model histories, and re-fetch its contents whenever required 
 def model_history(path=HISTORY_PATH):
@@ -78,7 +80,10 @@ def text_clean(c, stopwords = None, flatten_case = True):
         c = ' '.join([s for s in c.split() if s not in stopwords and len(s) < 50])
     return c.strip()
 
-def make_confusion_matrix(data, *args, percent='precision', preds='pred', real='real', counts='accuracy', groups=None):
+def make_confusion_matrix(data, *args, percent='precision', preds='pred', real='real', counts=None, groups=None, raw=False):
+    if counts is None:
+        data['accuracy'] = np.where(data['pred']==data['real'],1,0)
+        counts = 'accuracy'
     columns = None if 'columns' not in args else columns['args']
     idx = preds if percent=='recall' else real
     col = real if percent=='recall' else preds
@@ -89,8 +94,8 @@ def make_confusion_matrix(data, *args, percent='precision', preds='pred', real='
             data[c] = np.round(100*data[c]/np.sum(data[c]),5)
         except:
             pass
-    data = pretty_pandas(data,configs=make_palette(5,98,palette=['#F7F7FE','#FE0','red'],number='pct',columns=columns))
-    return data
+    pretty_data = pretty_pandas(data,configs=make_palette(5,98,palette=['#F7F7FE','#FE0','red'],number='pct',columns=columns))
+    return data if raw is True else pretty_data
 
 # legacy method for tokenizing using tf.keras.preprocessing.text.Tokenizer
 
@@ -291,7 +296,6 @@ def plot_history_v1(hist,name):
         s = sns.lineplot(ax=axes[1], x = data['epoch'], y = data['val_loss'])
 
 def plot_history(hist, filters=None, group='name', metrics=['accuracy','loss'], width=2, height=1, tight=False, size=(20,6), val=None, show_lr=True):
-    hist = model_history()
     if filters is not None:
         hist = hist[hist['name'].str.contains(filters)].reset_index(drop=True)
     fig,axes = plt.subplots(height, width, figsize=size)
@@ -374,36 +378,29 @@ def cbc_wrapper(data, target='y', test_frac=0.1, loss_function='MultiClass', ver
 
 # model wrapper for fully connected model architectures 
 
-def embedding_model(data,loss = 'sparse_categorical_crossentropy',optimizer = 'adam', rnn_depth = 64,
-                    embedding_dim = 16, layer_norm = False, categories = 1, activation = 'sigmoid'):
-    
-    # input_layer = tf.keras.Input(shape = data['train_padded'][0].shape)
-    # x = tf.keras.layers.Embedding(data['vocab'], embedding_dim, input_length = data['max_len'])(input_layer)
-    # x = tf.keras.layers.Flatten()(x)
-    # #x = tf.keras.layers.Bidirectional(tf.keras.layers.LSTM(rnn_depth))(x)
-    # #if layer_norm is True: x = tf.keras.layers.LayerNormalization()(x) # experimental!
-    # x = tf.keras.layers.Dense(64, activation='relu')(x)
-    # output_layer = tf.keras.layers.Dense(20, activation = 'sigmoid')(x)
-    # model = Model(inputs = input_layer, outputs = output_layer)
-    # model.compile('sgd', loss=tf.keras.losses.CategoricalCrossentropy(), metrics = ['accuracy']) #loss = loss, optimizer = optimizer, metrics = ['accuracy']) #,auc
-    # print(model.summary())
-    # return model
-    
-    model_multi = tf.keras.Sequential([
-        tf.keras.layers.Embedding(10000, 16, input_length=136),
-        tf.keras.layers.Flatten(),
-        # tf.keras.layers.Dense(256, activation='relu'),
-        # tf.keras.layers.Dense(20, activation='softmax')
-        tf.keras.layers.Dense(256, activation='relu'),
-        tf.keras.layers.Dense(20)
-    ])
+def embedding_model(input_length, embedding_dim=16, vocab_size=VOCAB_SIZE, categories=1, lr=1e-3, dense_layers=[256], metrics=['accuracy']):
 
+    if categories >= 3:
+        loss = tf.keras.losses.SparseCategoricalCrossentropy()
+        output_activation='softmax'
+    else:
+        loss = tf.keras.losses.BinaryCrossentropy()
+        output_activation='sigmoid'
+    
+    input_layer = tf.keras.Input(shape=input_length)
+    x = tf.keras.layers.Embedding(vocab_size, embedding_dim, input_length=input_length)(input_layer)
+    x = tf.keras.layers.Flatten()(x)
+    for l in dense_layers:
+        x = tf.keras.layers.Dense(l, activation='relu')(x)
+    output_layer = tf.keras.layers.Dense(categories, activation=output_activation)(x)
+    model = Model(inputs=input_layer, outputs=output_layer)
+    
     # setup the training parameters
-    model_multi.compile(loss=tf.keras.losses.SparseCategoricalCrossentropy(from_logits=True),
-                        optimizer=tf.keras.optimizers.Adam(lr=1e-3),
-                        metrics=['accuracy'])
+    model.compile(loss=loss,
+                  optimizer=tf.keras.optimizers.Adam(lr=lr),
+                  metrics=metrics)
 
-    return model_multi #.summary()
+    return model
 
 # model wrapper for LSTM returrant NN architectures - these are works in progress
 
@@ -555,8 +552,6 @@ def model_wrapper_legacy(data, label = 'y', model_name = 'mymodel', lr = (5e-5,1
         x_val = data['val_padded'][subset_val]
         y_val = data['val_labels'][label][subset_val]
 
-        # return (x,y),(x_val,y_val)
-    
         print(models[-1].summary)
         h = models[-1].fit(
             x,y,
@@ -586,9 +581,7 @@ def model_wrapper_legacy(data, label = 'y', model_name = 'mymodel', lr = (5e-5,1
                 save_model(models[-1],'model_data/'+model_name+'_last')
                 print('last model saved')
                 if max(metric_history) >= best:
-                    # best_model = models[metric_history.index(max(metric_history))-1]
                     shutil.copytree('model_data/'+model_name+'_last','model_data/'+model_name+'_best',dirs_exist_ok=True)
-                    # save_model(best_model,'model_data/'+model_name+'_best')
                     print('best model saved')
             r += 1
             
@@ -636,8 +629,8 @@ def process_model(data, model, label = 'y', model_name = 'mymodel', model_select
         if verbose is True: print('no model found - initializing')
         metric_history = [0]
         # return a compiled model with requested parameters
-        # model = model_gen(data) # model, multiclass, rnn_depth, embedding_dim, layer_norm, categories, activation, metrics)]
-        # model = model
+            # model = model_gen(data) # model, multiclass, rnn_depth, embedding_dim, layer_norm, categories, activation, metrics)]
+            # model = model
 
     r = start # which epoch we start from
     
@@ -666,7 +659,7 @@ def process_model(data, model, label = 'y', model_name = 'mymodel', model_select
     val_data = val_data.cache().batch(batch_size).shuffle(1000).prefetch(buffer_size = AUTOTUNE)
     
     while r <= min(end, runs):
-        # the models are always stored in an array. This just has length 1 if we didnt set split_epochs to true.  Else, it accumulates per epoch
+        # the models are always stored in an array. This just has length 1 if we didnt set split_epochs to true. Else, it accumulates per epoch
         learning_rate = (learning_rate_list[r-1], learning_rate_list[r-1]) if split_epochs is True else lr
         learning_rates = learning_trajectory(max(runs,epochs), lr = learning_rate, mode = 'exp', return_list = False)
         callbacks = [learning_rates]
@@ -711,6 +704,8 @@ train_df = pd.DataFrame.from_dict(train).sample(frac=1).reset_index(drop=True)
 test_df = pd.DataFrame.from_dict(test)
 
 train_df.head()
+
+cuisine_groups = np.unique(train_df['cuisine'])
 
 groups_df = pd.DataFrame.from_dict([Counter(train_df['cuisine'])]).transpose().reset_index().sort_values(by='index').reset_index(drop=True)
 groups_df['share'] = (groups_df[0]/sum(groups_df[0])).apply(lambda x: '{0:.2%}'.format(x))
@@ -762,8 +757,16 @@ model2,model_history2,model_data2 = cbc_wrapper(data_ordinal,epochs=20000,verbos
 model2.save_model('models/catboost_1.json',format='json')
 model_history2.to_csv('models/catboost_history_2.csv',index=False)
 
-model_history = pd.concat([model_history2.iloc[:,:3],model_history1[['learn_accuracy','validation_accuracy']]],axis=1).iloc[:,1:]
-model_history.columns = ['train_loss','validation_loss','train_accuracy','validation_accuracy']
+model_history_all = pd.concat([model_history2.iloc[:,:3],model_history1[['learn_accuracy','validation_accuracy']]],axis=1)
+model_history_all.columns = ['epoch','loss','val_loss','accuracy','val_accuracy']
+
+model_history_all
+
+fig,axes = plt.subplots(1, 2, figsize=(20,6))
+s = sns.lineplot(ax=axes[0], x = model_history_all['epoch'], y = model_history_all['accuracy'])
+s = sns.lineplot(ax=axes[0], x = model_history_all['epoch'], y = model_history_all['val_accuracy'])
+s = sns.lineplot(ax=axes[1], x = model_history_all['epoch'], y = model_history_all['loss'])
+s = sns.lineplot(ax=axes[1], x = model_history_all['epoch'], y = model_history_all['val_loss'])
 
 preds1 = pd.concat([pd.DataFrame(model_data1['y_pred']).reset_index(drop=True),pd.DataFrame(model_data1['y_val']).reset_index(drop=True)],axis=1)
 preds2 = pd.concat([pd.DataFrame(model_data2['y_pred']).reset_index(drop=True),pd.DataFrame(model_data2['y_val']).reset_index(drop=True)],axis=1)
@@ -774,32 +777,186 @@ preds2['match'] = preds2.apply(lambda r: 1 if r['y']==r[0] else 0,axis=1)
 print('Accuracy after',len(model_history1),'epochs is:',sum(preds1['match'])/len(preds1))
 print('Accuracy after',len(model_history2),'epochs is:',sum(preds2['match'])/len(preds2))
 
-plot_history(model_history(),'.*',metrics=['accuracy','loss'],val='overlap',show_lr=True)
-
-metrics=['accuracy','loss'], width=2, height=1, tight=False, size=(20,6), val=None,
-
-plt.figure(figsize=(10,6))
-plt.plot(model_history['learn_multiclass'])
-plt.plot(model_history['validation_multiclass'])
-
-
-
-
-
-# write a shuffled version to file - we can then reuse without shuffling again, to ensure a constistent validation set
+# ADDITIONAL DATA PREPARATION
+# concatenate the words into a single string, and clean out any unwanted characters
 
 train_df['recipe_concat'] = train_df['ingredients'].apply(lambda x: ' '.join(x))
 train_df['recipe_clean'] = train_df['recipe_concat'].apply(lambda x: text_clean(x))
-check_dupes = train_df[['cuisine','recipe_concat']].groupby('recipe_concat').count().reset_index()
+check_dupes = train_df[['cuisine', 'recipe_concat']].groupby('recipe_concat').count().reset_index()
 check_dupes = check_dupes[check_dupes['cuisine']==1]
 train_df = train_df[train_df['recipe_concat'].isin(check_dupes['recipe_concat'])].reset_index(drop=True)
 train_df.head()
 
-model_data_legacy = text_prepare_legacy(train_df[['recipe_clean','cuisine']], num_words = 10000, max_len = 30, encode = 'ordinal')
-model_data_onehot_legacy = text_prepare_legacy(train_df[['recipe_clean','cuisine']], num_words = 10000, max_len = 30, encode = 'onehot')
+model_data_legacy = text_prepare_legacy(train_df[['recipe_clean','cuisine']], num_words = VOCAB_SIZE, max_len = 30, encode = 'ordinal')
+model_data_onehot_legacy = text_prepare_legacy(train_df[['recipe_clean','cuisine']], num_words = VOCAB_SIZE, max_len = 30, encode = 'onehot')
 
-model_data = text_prepare(train_df[['recipe_clean','cuisine']], num_words = 10000, max_len = 30, encode = 'ordinal')
-model_data_onehot = text_prepare(train_df[['recipe_clean','cuisine']], num_words = 10000, max_len = 30, encode = 'onehot', batch_size = 64)
+model_data = text_prepare(train_df[['recipe_clean','cuisine']], num_words = VOCAB_SIZE, max_len = 30, encode = 'ordinal')
+model_data_onehot = text_prepare(train_df[['recipe_clean','cuisine']], num_words = VOCAB_SIZE, max_len = 30, encode = 'onehot', batch_size = 32)
+
+# model wrapper for fully connected model architectures 
+
+def embedding_model(input_length, embedding_dim=16, vocab_size=VOCAB_SIZE, categories=1, lr=1e-3, dense_layers=[256], metrics=['accuracy']):
+
+    if categories >= 3:
+        loss = tf.keras.losses.SparseCategoricalCrossentropy()
+        output_activation='softmax'
+    else:
+        loss = tf.keras.losses.BinaryCrossentropy()
+        output_activation='sigmoid'
+        
+    if type(dense_layers) is not list: # we pass a string to the function to help with pandas sorting, then coerce back to list later
+        dense_layers = [int(i) for i in dense_layers.split(',')]
+    
+    input_layer = tf.keras.Input(shape=input_length)
+    x = tf.keras.layers.Embedding(vocab_size, embedding_dim, input_length=input_length)(input_layer)
+    x = tf.keras.layers.Flatten()(x)
+    for l in dense_layers:
+        x = tf.keras.layers.Dense(l, activation='relu')(x)
+    output_layer = tf.keras.layers.Dense(categories, activation=output_activation)(x)
+    model = Model(inputs=input_layer, outputs=output_layer)
+    
+    # setup the training parameters
+    model.compile(loss=loss,
+                  optimizer=tf.keras.optimizers.Adam(lr=lr),
+                  metrics=metrics)
+
+    return model
+
+train_data = model_data['train_data'][0].batch(64)
+val_data = model_data['val_data'][0].batch(64)
+
+train_shape = iter(train_data).next()[0].shape # verify the length of our tokenized strings. Here, we've used 30
+token_length = train_shape[1]
+
+hyperparams = {
+    'learning_rate': [1e-3,1e-4,1e-5],
+    'embedding_dim': [16,64],
+    'dense_layers': ['256','256,256']
+}
+
+def gen_hypers(params, continuous = None, limit = 150, frac=1, keep_sorted=True):
+    hypers = pd.DataFrame(product(*[params[c] for c in params]),columns=params.keys())
+    hypers = hypers.sample(frac=frac).reset_index(drop=True)
+    hypers = hypers[:limit]
+    if keep_sorted is True:
+        hypers = hypers.sort_values(by=list(hypers.columns),ascending=[True for c in hypers.columns]).reset_index(drop=True)
+    return hypers
+
+hyperparams_df = gen_hypers(hyperparams)
+hyperparams_df
+
+# use an early stopping callback to save training time
+early_stopping = EarlyStopping(monitor='val_accuracy', patience=4, mode='max', restore_best_weights=True)
+
+for i in range(len(hyperparams_df)):
+    if i==0:
+        history = []
+        models = []
+        preds = []
+    learning_rate = hyperparams_df.iloc[i,:]['learning_rate']
+    embedding_dim = hyperparams_df.iloc[i,:]['embedding_dim']
+    dense_layers = hyperparams_df.iloc[i,:]['dense_layers']
+    models.append(embedding_model(input_length=token_length,categories=len(cuisine_groups),lr=learning_rate,
+                                  embedding_dim=embedding_dim,dense_layers=dense_layers))
+    print('Training Model',i+1,':',', '.join([str(a)+': '+str(b) for a,b in zip(list(hyperparams_df.columns),list(hyperparams_df.iloc[i,:]))]))
+    
+    epochs = 50 if learning_rate < 1e-4 else 25
+    
+    history.append(models[-1].fit(
+        train_data,
+        epochs = epochs,
+        validation_data = val_data,
+        verbose = 0,
+        callbacks = [early_stopping]
+    ).history)
+    save_model(models[-1],'models/model_dense_'+str(i+1)+'.h5')
+    preds.append(np.argmax(models[-1].predict(val_data),axis=1))
+history = pd.concat([pd.DataFrame(h) for h in history],axis=1).reset_index()
+history.columns = ['epoch']+list(history.columns)[1:]
+history.to_csv('model_data/history_dense.csv',index=False)
+
+accuracy = pd.concat([history.iloc[:,i:i+1] for i in range(2,len(history.columns),4)],axis=1)
+val_accuracy = pd.concat([history.iloc[:,i:i+1] for i in range(4,len(history.columns),4)],axis=1)
+
+print('Accuracy is:',np.nanmax(np.max(val_accuracy)),'from model',np.argmax(np.max(val_accuracy))+1)
+
+# make a dataframe ot the preds from our perferred model, vs the real values, so we can make a confusion matrix later
+preds_real = pd.DataFrame(np.array([preds[6],model_data['val_labels']]).T,columns=['pred','real'])
+
+labels = hyperparams_df.apply(lambda x: str(x['embedding_dim'])+', ('+str(x['dense_layers']+')'),axis=1)
+
+fig,axes = plt.subplots(2, 3, figsize=(20,10))
+for i in range(len(accuracy.columns)):
+    sns.lineplot(ax=axes[0,i//4], x = history['epoch'], y = accuracy.iloc[:,i], legend='brief', label=labels[i])
+    sns.lineplot(ax=axes[1,i//4], x = history['epoch'], y = val_accuracy.iloc[:,i], legend='brief', label=labels[i])
+
+train_data_onehot = model_data_onehot['train_data']
+val_data_onehot = model_data_onehot['val_data']
+
+best_model_index = np.argmax(np.max(val_accuracy))
+best_hps = list(hyperparams_df.iloc[best_model_index,:])
+
+best_hps
+
+for i in range(len(cuisine_groups)):
+    if i==0:
+        model_onehot = []
+        history_onehot = []
+        preds_onehot = []
+    model_onehot.append(
+        embedding_model(input_length=token_length, categories=1, lr=best_hps[0], embedding_dim=best_hps[1], dense_layers=best_hps[2], metrics=['accuracy'])
+    )
+    print('Training Model',i+1,':',cuisine_groups[i])
+    history_onehot.append(model_onehot[-1].fit(
+        train_data_onehot[i],
+        epochs = 50,
+        validation_data = val_data_onehot[i],
+        verbose = 0,
+        callbacks = [early_stopping]
+    ).history)
+    save_model(model_onehot[-1],'models/model_dense_onehot_'+cuisine_groups[i]+'.h5')
+    preds_onehot.append(model_onehot[-1].predict(val_data_onehot[0], verbose=0))
+history_onehot = pd.concat([pd.DataFrame(h) for h in history_onehot],axis=1).reset_index()
+history_onehot.columns = ['epoch']+list(history_onehot.columns)[1:]
+history_onehot.to_csv('model_data/history_dense_onehot.csv',index=False)
+
+model_onehot[-1].predict(val_data_onehot[0])
+
+preds_onehot = np.argmax(np.asarray(preds_onehot).squeeze(),axis=0)
+real_onehot = np.argmax(model_data_onehot['val_labels'],1)
+preds_real_onehot = pd.DataFrame(np.array([preds_onehot,real_onehot]).T,columns=['pred','real'])
+
+accuracy_onehot = pd.concat([history_onehot.iloc[:,i:i+1] for i in range(2,len(history_onehot.columns),4)],axis=1)
+val_accuracy_onehot = pd.concat([history_onehot.iloc[:,i:i+1] for i in range(4,len(history_onehot.columns),4)],axis=1)
+
+print('Accuracy is:',np.mean(real_onehot==preds_onehot))
+
+fig,axes = plt.subplots(1, 2, figsize=(20,6))
+print('')
+for i in range(len(accuracy_onehot.columns)):
+    sns.lineplot(ax=axes[0], x = history_onehot['epoch'], y = accuracy_onehot.iloc[:,i], legend='brief',
+                 label=cuisine_groups[i]).set_title('TRAINING ACCURACY FOR EACH CUISINE GROUP')
+    sns.lineplot(ax=axes[1], x = history_onehot['epoch'], y = val_accuracy_onehot.iloc[:,i], legend='brief',
+                 label=cuisine_groups[i]).set_title('VALIDATION ACCURACY FOR EACH CUISINE GROUP')
+
+make_confusion_matrix(preds_real, groups=cuisine_groups)
+
+make_confusion_matrix(preds_real_onehot, groups=cuisine_groups)
+
+confusion = make_confusion_matrix(preds_real, groups=cuisine_groups, raw=True)
+confusion_onehot = make_confusion_matrix(preds_real_onehot, groups=cuisine_groups, raw=True)
+diag, diag_onehot = [],[]
+for i in range(len(cuisine_groups)):
+    diag.append(confusion.iloc[i,i])
+    diag_onehot.append(confusion_onehot.iloc[i,i])
+diag_diff = confusion.T.iloc[:,:1]
+diag_diff[0] = np.round(np.array(diag_onehot)-np.array(diag),3)
+diag_diff.columns = ['diff']
+diag_diff = diag_diff.T
+
+diag_diff
+
+print('Mean Confusion Gain:',np.round(np.sum(np.array(diag_onehot)-np.array(diag)),4)/len(cuisine_groups))
 
 model_lstm_1 = lstm_model(model_data, loss='sparse_categorical_crossentropy', optimizer = 'adam', rnn_depth = 128, embedding_dim = 64,
                            layer_norm = True, categories = 20, activation = 'softmax', metrics=['accuracy'])
@@ -894,7 +1051,7 @@ for c in my_cuisines:
                               layer_norm = True, categories = 1, activation = 'sigmoid', metrics=[my_auc,'accuracy'])
     process_model(model_data_onehot, model_tune_2, label_class = 6, label = 'cuisine_'+c, model_name = 'model_lstm_onehot_'+c+'_v3', lr = (1e-5,1e-5),
                   epochs = 20, batch_size = 128, epoch_subset = 1, split_epochs=True)
-    
+
     model_tune_3 = lstm_model(model_data_onehot, loss = 'binary_crossentropy', optimizer = 'adam', rnn_depth = 64, embedding_dim = 6,
                               layer_norm = True, categories = 1, activation = 'sigmoid', metrics=[my_auc,'accuracy'])
     process_model(model_data_onehot, model_tune_3, label_class = 6, label = 'cuisine_'+c, model_name = 'model_lstm_onehot_'+c+'_v3', lr = (1e-5,1e-5),
@@ -993,62 +1150,7 @@ plot_history(model_history(), filters, metrics=['accuracy','loss'], width=2, hei
 
 make_confusion_matrix(preds_df_expanded, groups=cuisine_groups)
 
-train_df_shuffled = pd.read_csv('data/train_df_shuffled.csv')
-train_df_shuffled['ingredients'] = train_df_shuffled['ingredients'].apply(lambda x: eval(x))
 
-id2 = np.arange(len(train_df_shuffled))
-random.shuffle(id2)
-id2 = pd.DataFrame(id2,columns=['id2'])
-train_df_shuffled = pd.concat([train_df_shuffled,id2],axis=1)
-
-for i in range(40):
-    train_df_shuffled2 = train_df_shuffled.copy() if i==0 else train_df_shuffled2.append(train_df_shuffled).reset_index(drop=True)
-train_df_shuffled2 = train_df_shuffled2.sort_values(by='id2')
-
-for i in range(len(train_df_shuffled2)):
-    np.random.seed(np.random.randint(10000))
-    np.random.shuffle(train_df_shuffled2['ingredients'][i])
-
-train_df_shuffled2['ingredients'] = train_df_shuffled2['ingredients'].apply(lambda x: [re.sub(' ','_',w) for w in x])
-for i in range(len(train_df_shuffled2)): np.random.shuffle(train_df_shuffled2['ingredients'][i])
-train_df_shuffled2['recipe_concat'] = train_df_shuffled2['ingredients'].apply(lambda x: ' '.join(x))
-train_df_shuffled2['recipe_clean'] = train_df_shuffled2['recipe_concat'].apply(lambda x: text_clean(x))
-train_df_shuffled2['recipe_clean'] = train_df_shuffled2['recipe_clean'].apply(lambda x: remove_underscores(x,removal_rate))
-train_df_shuffled2 = train_df_shuffled2.reset_index(drop=True)
-
-#train_df_shuffled2.to_csv('data/train_df_shuffled_expanded2.csv',index=False)
-train_df_shuffled2 = pd.read_csv('data/train_df_shuffled_expanded2.csv')
-
-model_data_expanded_shuffled = text_prepare(train_df_shuffled2[['recipe_clean','id2','cuisine']], num_words = vocab, max_len = 40, encode = 'ordinal')
-
-model_wrapper_new(
-    model_data_expanded, label = 'cuisine', model_name = 'model_lstm_expanded_shuffled', lr = (5e-6,1e-4), epochs = 20, split_epochs = True,
-    batch_size = 512, epoch_subset = 1, rnn_depth = 64, embedding_dim = 32, layer_norm = True, multiclass = True
-)
-
-#aggressive lr
-model_wrapper_new(
-    model_data_expanded_shuffled, label = 'cuisine', model_name = 'model_lstm_expanded_shuffled_v2', lr = (5e-4,1e-2), epochs = 20, split_epochs = True,
-    batch_size = 512, epoch_subset = 1, rnn_depth = 64, embedding_dim = 32, layer_norm = True, multiclass = True, stop = 3
-)
-
-#aggressive lr, higher parameters
-model_wrapper_new(
-    model_data_expanded_shuffled, label = 'cuisine', model_name = 'model_lstm_expanded_shuffled_v3', lr = (5e-4,1e-2), epochs = 20, split_epochs = True,
-    batch_size = 512, epoch_subset = 1, rnn_depth = 256, embedding_dim = 128, layer_norm = True, multiclass = True, stop = 2
-)
-
-#aggressive lr, higher parameters
-model_wrapper_new(
-    model_data_expanded_shuffled, label = 'cuisine', model_name = 'model_lstm_expanded_shuffled_v4', lr = (5e-4,1e-2), epochs = 100, split_epochs = True,
-    batch_size = 512, epoch_subset = 0.01, rnn_depth = 128, embedding_dim = 64, layer_norm = True, multiclass = True, stop = 2
-)
-
-#aggressive lr, higher parameters
-model_wrapper_new(
-    model_data_expanded_shuffled, label = 'cuisine', model_name = 'model_lstm_expanded_shuffled_v5', lr = (5e-4,5e-4), epochs = 40, split_epochs = True,
-    batch_size = 64, epoch_subset = 0.025, epoch_subset_val = 0.2, rnn_depth = 1536, embedding_dim = 256, layer_norm = True, multiclass = True,stop = 80
-) #, 
 
 embedding_dim = [8,16,32,64]
 rnn_dim = [64,256,1024]
