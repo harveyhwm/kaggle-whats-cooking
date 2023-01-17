@@ -82,18 +82,29 @@ def text_clean(c, stopwords = None, flatten_case = True):
 
 def make_confusion_matrix(data, *args, percent='precision', preds='pred', real='real', counts=None, groups=None, raw=False):
     if counts is None:
-        data['accuracy'] = np.where(data['pred']==data['real'],1,0)
+        data['accuracy'] = 1 #np.where(data['pred']==data['real'],1,0)
         counts = 'accuracy'
+    
+    # fix to allow zero groups to be in here :) 
+    permutations = {
+        'pred': np.arange(len(set(data['real']))),
+        'real': np.arange(len(set(data['real']))),
+        counts: [0]
+    }
+    permutations = pd.DataFrame(product(*[permutations[c] for c in permutations]),columns=permutations.keys())
+    data = data.append(permutations).reset_index(drop=True)
+
     columns = None if 'columns' not in args else columns['args']
     idx = preds if percent=='recall' else real
     col = real if percent=='recall' else preds
-    data = data.groupby([preds,real]).count().reset_index().pivot(index=idx, columns=col, values=counts).fillna(0).reset_index(drop=True)
+    data = data.groupby([preds,real]).sum().reset_index().pivot(index=idx, columns=col, values=counts).fillna(0).reset_index(drop=True)
+    # return data
     if groups is not None: data.columns = groups
     for c in data.columns:
         try:
-            data[c] = np.round(100*data[c]/np.sum(data[c]),5)
+            data[c] = np.round(100*data[c]/max(1e-5,np.sum(data[c])),5)
         except:
-            pass
+            data[c] = 0.
     pretty_data = pretty_pandas(data,configs=make_palette(5,98,palette=['#F7F7FE','#FE0','red'],number='pct',columns=columns))
     return data if raw is True else pretty_data
 
